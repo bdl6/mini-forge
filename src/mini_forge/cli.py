@@ -10,7 +10,7 @@ from .content import encode_movies
 from .data import download_movielens, prepare_movielens
 from .generator import evaluate_generator, train_generator
 from .rqvae import train_rqvae
-from .sid import export_rqvae_sid
+from .sid import create_alternative_sid, export_opq_sid, export_rqkmeans_sid, export_rqvae_sid
 
 
 def _print_result(value: Any) -> None:
@@ -36,8 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("embed")
     subparsers.add_parser("train-rqvae")
     subparsers.add_parser("export-sid")
-    subparsers.add_parser("train-generator")
+    alternative = subparsers.add_parser("export-alternative-sid")
+    alternative.add_argument("--mode", choices=["random", "direct"], required=True)
+    subparsers.add_parser("export-rqkmeans-sid")
+    subparsers.add_parser("export-opq-sid")
+    generator_train = subparsers.add_parser("train-generator")
+    generator_train.add_argument("--sid-map", type=Path)
     generator_eval = subparsers.add_parser("eval-generator")
+    generator_eval.add_argument("--sid-map", type=Path)
     generator_eval.add_argument("--checkpoint")
     generator_eval.add_argument("--split", choices=["validation", "test"], default="test")
     pipeline = subparsers.add_parser("run-all")
@@ -58,10 +64,16 @@ def main() -> None:
         _print_result(train_rqvae(config))
     elif args.command == "export-sid":
         _print_result(export_rqvae_sid(config))
+    elif args.command == "export-alternative-sid":
+        _print_result({"sid_map": str(create_alternative_sid(config, args.mode))})
+    elif args.command == "export-rqkmeans-sid":
+        _print_result(export_rqkmeans_sid(config))
+    elif args.command == "export-opq-sid":
+        _print_result(export_opq_sid(config))
     elif args.command == "train-generator":
-        _print_result(train_generator(config))
+        _print_result(train_generator(config, sid_map_path=args.sid_map))
     elif args.command == "eval-generator":
-        _print_result(evaluate_generator(config, args.split, checkpoint_path=args.checkpoint))
+        _print_result(evaluate_generator(config, args.split, sid_map_path=args.sid_map, checkpoint_path=args.checkpoint))
     elif args.command == "run-all":
         if not args.skip_download:
             download_movielens(config["paths"]["raw_dir"])

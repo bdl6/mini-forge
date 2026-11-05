@@ -17,6 +17,7 @@ MOVIELENS_URL = "https://files.grouplens.org/datasets/movielens/ml-1m.zip"
 
 
 def _looks_like_movielens_1m(raw_dir: Path) -> bool:
+    """用必需文件和大致文件大小判断正式数据是否已下载。"""
     ratings = raw_dir / "ratings.dat"
     movies = raw_dir / "movies.dat"
     users = raw_dir / "users.dat"
@@ -30,6 +31,7 @@ def _looks_like_movielens_1m(raw_dir: Path) -> bool:
 
 
 def download_movielens(raw_dir: str | Path) -> Path:
+    """下载并解压官方 MovieLens 1M；已有正式数据时直接复用。"""
     raw_dir = Path(raw_dir)
     if _looks_like_movielens_1m(raw_dir):
         return raw_dir
@@ -44,9 +46,11 @@ def download_movielens(raw_dir: str | Path) -> Path:
 
 
 def _k_core(frame: pd.DataFrame, min_users: int, min_items: int) -> pd.DataFrame:
+    """反复过滤交互不足的用户和电影，直到两侧都满足阈值。"""
     current = frame
     while True:
         before = len(current)
+        # 删除电影后，部分用户也可能跌破阈值，因此需要迭代至收敛。
         user_counts = current.groupby("user_id").size()
         current = current[current.user_id.isin(user_counts[user_counts >= min_users].index)]
         item_counts = current.groupby("movie_id").size()
@@ -56,6 +60,7 @@ def _k_core(frame: pd.DataFrame, min_users: int, min_items: int) -> pd.DataFrame
 
 
 def _make_i2i_pairs(sequences: dict[int, list[int]], window: int) -> np.ndarray:
+    """从训练序列统计窗口内的无向电影对，距离越近权重越高。"""
     weights: Counter[tuple[int, int]] = Counter()
     for sequence in sequences.values():
         for left in range(len(sequence)):
@@ -68,10 +73,12 @@ def _make_i2i_pairs(sequences: dict[int, list[int]], window: int) -> np.ndarray:
 
 
 def prepare_movielens(config: dict[str, Any]) -> dict[str, Any]:
+    """将原始交互整理为时序训练样本、留出集和电影共现对。"""
     raw_dir = Path(config["paths"]["raw_dir"])
     output_dir = ensure_dir(config["paths"]["processed_dir"])
     if not (raw_dir / "ratings.dat").exists():
         raise FileNotFoundError(f"Missing {raw_dir / 'ratings.dat'}; run the download command first")
+    # MovieLens .dat 使用双冒号分隔，原始文件采用 latin-1 编码。
     ratings = pd.read_csv(
         raw_dir / "ratings.dat", sep="::", engine="python", encoding="latin-1",
         names=["user_id", "movie_id", "rating", "timestamp"],
@@ -87,8 +94,7 @@ def prepare_movielens(config: dict[str, Any]) -> dict[str, Any]:
             names=["user_id", "gender", "age", "occupation", "zip_code"],
         )
     else:
-        # Small synthetic fixtures may omit users.dat. Keep their pipeline usable
-        # while making the missing attributes explicit in the generated tokens.
+        # Smoke 合成数据可能没有 users.dat；保留用户 ID，并用 UNK 标记缺失属性。
         users = pd.DataFrame({
             "user_id": sorted(ratings.user_id.unique()),
             "gender": "UNK",
@@ -97,6 +103,7 @@ def prepare_movielens(config: dict[str, Any]) -> dict[str, Any]:
             "zip_code": "UNK",
         })
     data_cfg = config["data"]
+    # 先保留正反馈，再做迭代 K-core；切分只针对过滤后的交互。
     ratings = ratings[ratings.rating >= data_cfg["positive_rating"]]
     ratings = _k_core(
         ratings,
@@ -128,11 +135,13 @@ def prepare_movielens(config: dict[str, Any]) -> dict[str, Any]:
     for user_id, group in ratings.groupby("user_id", sort=True):
         records = group.sort_values(["timestamp", "movie_id"]).to_dict("records")
         movie_ids = [int(row["movie_id"]) for row in records]
+        # 每个用户最后两次交互分别作为验证和测试目标。
         train_items, validation_item, test_item = movie_ids[:-2], movie_ids[-2], movie_ids[-1]
         train_sequences[int(user_id)] = train_items
         for position, row in enumerate(records):
             split = "train" if position < len(records) - 2 else ("validation" if position == len(records) - 2 else "test")
             interactions.append({**{key: int(row[key]) for key in ["user_id", "movie_id", "rating", "timestamp"]}, "split": split})
+        # 滑动前缀只取训练时间段的历史，避免验证/测试目标泄漏到训练样本。
         for target_position in range(min_history, len(train_items), stride):
             train_examples.append({
                 **user_fields(int(user_id)),
@@ -144,12 +153,14 @@ def prepare_movielens(config: dict[str, Any]) -> dict[str, Any]:
             "history": train_items[-max_history:],
             "target": validation_item,
         })
+        # 测试时验证物品已发生，因此可以进入历史，但测试目标不能进入。
         test_rows.append({
             **user_fields(int(user_id)),
             "history": (train_items + [validation_item])[-max_history:],
             "target": test_item,
         })
 
+    # 仅导出过滤后仍有交互的电影和用户，供后续向量化及 SID 训练使用。
     kept_movies = movies[movies.movie_id.isin(ratings.movie_id.unique())].copy().sort_values("movie_id")
     kept_users = users[users.user_id.isin(ratings.user_id.unique())].copy().sort_values("user_id")
     kept_movies.to_csv(output_dir / "movies.csv", index=False)
@@ -158,8 +169,10 @@ def prepare_movielens(config: dict[str, Any]) -> dict[str, Any]:
     write_jsonl(output_dir / "train.jsonl", train_examples)
     write_jsonl(output_dir / "validation.jsonl", validation_rows)
     write_jsonl(output_dir / "test.jsonl", test_rows)
+    # 共现对同样只来自训练时间段，不使用留出的验证/测试交互。
     pairs = _make_i2i_pairs(train_sequences, int(data_cfg["i2i_window"]))
     np.save(output_dir / "i2i_pairs.npy", pairs)
+    # 原始评分文件的校验和用于记录这次预处理所依据的数据版本。
     checksum = hashlib.sha256((raw_dir / "ratings.dat").read_bytes()).hexdigest()
     metadata = {
         "num_users": int(ratings.user_id.nunique()),

@@ -24,6 +24,9 @@ rqvae:
   num_codebooks: 3
   codebook_size: 64
   commitment_beta: 0.25
+  codebook_update: gradient  # gradient 或 ema；旧行为保持为 gradient
+  ema_decay: 0.99            # 仅 ema 模式使用
+  ema_eps: 0.00001           # 仅 ema 模式使用，防止计数分母过小
   i2i_weight: 0.1
   temperature: 0.07
   learning_rate: 0.001
@@ -36,6 +39,12 @@ rqvae:
   gradient_clip: 1.0
   validation_ratio: 0.1
   kmeans_iterations: 30
+opq:
+  num_codebooks: 3
+  codebook_size: 64
+  rotation_iterations: 10
+  kmeans_iterations: 30
+  batch_size: 4096
 generator:
   d_model: 256
   d_ff: 1024

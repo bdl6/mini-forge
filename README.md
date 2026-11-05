@@ -101,6 +101,47 @@ mini-forge train-generator
 mini-forge eval-generator --split test
 ```
 
+## SID 构造方法对照
+
+已有内容向量和处理后的 MovieLens 数据时，可以在同一数据切分下生成多套 SID：
+
+```powershell
+python -m mini_forge.cli export-sid
+python -m mini_forge.cli export-rqkmeans-sid
+python -m mini_forge.cli export-opq-sid
+python -m mini_forge.cli export-alternative-sid --mode random
+python -m mini_forge.cli export-alternative-sid --mode direct
+```
+
+五种映射分别写入 `artifacts/sid/`、`artifacts/sid_rqkmeans/`、
+`artifacts/sid_opq/`、`artifacts/sid_random/` 和 `artifacts/sid_direct/`。RQ-KMeans 直接聚类同一批
+384 维内容向量，使用 `rqvae.num_codebooks`、`rqvae.codebook_size` 和
+`rqvae.kmeans_iterations`；其量化误差与 RQ-VAE 解码重建误差定义不同，不能直接比较。
+OPQ 在同一批 384 维向量上交替优化正交旋转和分块 K-Means；默认分成 3 个
+128 维子空间，每块 64 个码。OPQ 的第 1、2、3 个码来自**不同向量分块**，
+不是 RQ-VAE/RQ-KMeans 的逐层残差码；因此 OPQ 的“共享前缀”不能直接解释为
+由粗到细的语义层级。参数在 `configs/default.yaml` 的 `opq` 小节。
+实现基于 [Optimized Product Quantization](https://www.cv-foundation.org/openaccess/content_cvpr_2013/papers/Ge_Optimized_Product_Quantization_2013_CVPR_paper.pdf)
+的正交旋转和分块量化思路，使用 PyTorch 实现，不依赖 Faiss。
+随机 SID 保持与 RQ-VAE 相同的 token 层数和码本大小；直接 ID 是单个电影 token，
+长度和词表大小不同，因此属于实用基线，不是严格控制 token 长度的消融。
+
+每套 SID 都需要单独训练生成器。命令中的映射路径决定独立的结果目录，
+不会覆盖原有的 `artifacts/generator/sid/`：
+
+```powershell
+python -m mini_forge.cli train-generator --sid-map artifacts/sid_rqkmeans/movie_to_sid.json
+python -m mini_forge.cli eval-generator --sid-map artifacts/sid_rqkmeans/movie_to_sid.json --split test
+```
+
+其他方法把 `sid_rqkmeans` 换成 `sid_opq`、`sid_random` 或 `sid_direct` 即可。
+各组保持相同的 `configs/default.yaml`、随机种子、训练/验证/测试文件、
+已看电影过滤和电影级 HR/NDCG 口径；最好重复多个随机种子。
+只有 `artifacts/generator/<方法目录>/test_metrics.json` 实际生成后，
+才能比较最终推荐效果。`export-rqkmeans-sid` 同时输出 SID 质量指标，
+`export-opq-sid` 输出 OPQ 旋转矩阵、子码本和 SID 质量指标；
+随机和直接 ID 没有重建向量，不能比较重建 MSE。
+
 也可以一条命令执行核心链路：
 
 ```bash
@@ -120,6 +161,17 @@ mini-forge --set rqvae.codebook_size=32 train-rqvae
 mini-forge --set generator.batch_size=8 train-generator
 mini-forge --set inference.num_beams=10 eval-generator --split validation
 ```
+
+RQ-VAE 码本默认通过量化损失的梯度更新。也可用指数移动平均（EMA）
+更新码本：
+
+```bash
+mini-forge --set rqvae.codebook_update=ema --set rqvae.ema_decay=0.99 train-rqvae
+```
+
+EMA 模式按每批被选中的残差维护码本的平滑计数和向量和；此时优化器不再更新码本，
+量化损失只保留编码器的 commitment 项。`ema_decay` 越接近 1，码本更新越平滑。
+重新执行 `train-rqvae` 会覆盖当前 `artifacts/rqvae/best.pt`，比较两种方法前请先保存原有产物。
 
 ## 用户信息与训练数据
 

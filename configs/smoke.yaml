@@ -23,6 +23,9 @@ rqvae:
   num_codebooks: 2
   codebook_size: 8
   commitment_beta: 0.25
+  codebook_update: gradient
+  ema_decay: 0.99
+  ema_eps: 0.00001
   i2i_weight: 0.05
   temperature: 0.1
   learning_rate: 0.003
@@ -35,6 +38,12 @@ rqvae:
   gradient_clip: 1.0
   validation_ratio: 0.2
   kmeans_iterations: 3
+opq:
+  num_codebooks: 2
+  codebook_size: 8
+  rotation_iterations: 2
+  kmeans_iterations: 3
+  batch_size: 128
 generator:
   d_model: 32
   d_ff: 64
